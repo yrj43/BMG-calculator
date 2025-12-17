@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Rate Combiner — React (No Babel, GitHub Pages)</title>
+  <style>
+    :root { --bg:#0f172a; --accent:#22d3ee; --text:#e5e7eb; --muted:#9ca3af; --danger:#ef4444; --ok:#10b981; }
+    *{box-sizing:border-box}
+    body{margin:0;padding:2rem;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    .container{max-width:900px;margin:0 auto}
+    .card{background:linear-gradient(180deg,#0b1324 0%,#0e162a 100%);border:1px solid #1f2937;border-radius:16px;padding:1.5rem;box-shadow:0 10px 25px rgba(0,0,0,.35)}
+    h1{font-size:1.75rem;margin:0 0 .5rem}
+    .subtitle{color:var(--muted);margin-bottom:1rem}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+    @media(max-width:720px){.grid{grid-template-columns:1fr}}
+    label{font-weight:600;display:block;margin-bottom:.35rem}
+    input,textarea{width:100%;background:#0b1220;color:var(--text);border:1px solid #233043;border-radius:10px;padding:.75rem;outline:none;transition:180ms border-color ease}
+    input:focus,textarea:focus{border-color:var(--accent)}
+    textarea{min-height:90px;resize:vertical}
+    .row{display:flex;gap:1rem}
+    .row>*{flex:1}
+    .btn{background:linear-gradient(90deg,#0ea5e9,#22d3ee);color:#05263d;font-weight:700;border:none;border-radius:12px;padding:.85rem 1.25rem;cursor:pointer}
+    .counters{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem;color:var(--muted)}
+    .pill{background:#0b1220;border:1px solid #223047;border-radius:999px;padding:.4rem .8rem}
+    .error{margin-top:1rem;color:var(--danger);font-weight:600}
+    .result{margin-top:1.5rem;border-top:1px dashed #223047;padding-top:1rem}
+    .table{width:100%;border-collapse:collapse;margin-top:.75rem}
+    .table th,.table td{border-bottom:1px solid #223047;padding:.6rem;text-align:left}
+    .table th{color:var(--muted);font-weight:700}
+    .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-top:1rem}
+    .kpi .box{background:#0b1220;border:1px solid #223047;border-radius:12px;padding:.8rem}
+    .kpi .label{color:var(--muted);font-size:.85rem}
+    .kpi .value{font-size:1.1rem;font-weight:700}
+    footer{margin-top:2rem;color:var(--muted);font-size:.9rem;text-align:center}
+    .ok{color:var(--ok);font-weight:700}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React UMD (no Babel, no build) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <script>
+    // Utilities
+    const toFloat = (s) => {
+      const n = parseFloat(String(s).trim());
+      return Number.isFinite(n) ? n : NaN;
+    };
+    const toCents = (v) => Math.round(v * 100);
+
+    // Logic ported from Python
+    function findBestCombinationJS(ratesFloat, totalRateFloat, minUnits) {
+      const cleanedRates = ratesFloat.filter(r => Number.isFinite(r) && r > 0);
+      if (cleanedRates.length === 0) return null;
+      const rates = cleanedRates.map(toCents);
+      const total = toCents(totalRateFloat);
+      const maxMultipliers = rates.map(rate => Math.floor(total / rate));
+      const n = rates.length;
+      const counts = new Array(n).fill(0);
+      let found = null;
+      function dfs(i, sum, units) {
+        if (found) return;
+        if (i === n) {
+          if (sum === total && units >= minUnits) {
+            const combo = [];
+            for (let k = 0; k < n; k++) {
+              for (let c = 0; c < counts[k]; c++) combo.push(cleanedRates[k]);
+            }
+            found = combo;
+          }
+          return;
+        }
+        const rate = rates[i];
+        const maxC = Math.max(0, maxMultipliers[i]);
+        for (let c = 1; c <= maxC; c++) {
+          const newSum = sum + c * rate;
+          if (newSum > total) break;
+          counts[i] = c;
+          let maxRemaining = 0;
+          for (let j = i + 1; j < n; j++) maxRemaining += maxMultipliers[j] * rates[j];
+          if (newSum + maxRemaining < total) continue;
+          dfs(i + 1, newSum, units + c);
+          if (found) return;
+        }
+        counts[i] = 0;
+        dfs(i + 1, sum, units);
+      }
+      dfs(0, 0, 0);
+      return found;
+    }
+
+    // React without JSX
+    const e = React.createElement;
+
+    function App() {
+      const [visitorCount, setVisitorCount] = React.useState(0);
+      const [clickCount, setClickCount] = React.useState(0);
+      const [totalRate, setTotalRate] = React.useState("");
+      const [minUnits, setMinUnits] = React.useState("1");
+      const [ratesInput, setRatesInput] = React.useState("");
+      const [result, setResult] = React.useState(null);
+      const [error, setError] = React.useState("");
+
+      React.useEffect(() => {
+        const prev = parseInt(localStorage.getItem("visitor_count") || "0", 10);
+        const next = prev + 1;
+        localStorage.setItem("visitor_count", String(next));
+        setVisitorCount(next);
+        const clicks = parseInt(localStorage.getItem("click_count") || "0", 10);
+        setClickCount(clicks);
+      }, []);
+
+      const onSubmit = (eEvt) => {
+        eEvt.preventDefault();
+        setError("");
+        setResult(null);
+        const prevClicks = parseInt(localStorage.getItem("click_count") || "0", 10);
+        const nextClicks = prevClicks + 1;
+        localStorage.setItem("click_count", String(nextClicks));
+        setClickCount(nextClicks);
+        const total = toFloat(totalRate);
+        const minU = parseInt(minUnits, 10);
+        if (!Number.isFinite(total) || total <= 0) { setError("Please enter a valid positive Total Rate."); return; }
+        if (!Number.isFinite(minU) || minU < 1) { setError("Please enter a valid Min Units (≥ 1)."); return; }
+        const rates = ratesInput.split(",").map(s => toFloat(s)).filter(n => Number.isFinite(n) && n > 0);
+        if (rates.length === 0) { setError("Please provide at least one positive rate, comma-separated (e.g., 10, 12.5, 20)."); return; }
+        const best = findBestCombinationJS(rates, total, minU);
+        if (!best) { setResult({ rateCounts: null, totalUnits: 0, totalRate: 0 }); return; }
+        const map = new Map();
+        for (const r of best) { const key = r.toFixed(2); map.set(key, (map.get(key) || 0) + 1); }
+        const totalUnits = best.length;
+        const totalRateSum = best.reduce((acc, r) => acc + r, 0);
+        setResult({ rateCounts: map, totalUnits, totalRate: Number(totalRateSum.toFixed(2)) });
+      };
+
+      // Helpers to render rows
+      const renderTableRows = () => {
+        return Array.from(result.rateCounts.entries())
+          .sort((a,b) => parseFloat(a[0]) - parseFloat(b[0]))
+          .map(([rate,count]) => e('tr', { key: rate }, [
+            e('td', null, `₹ ${rate}`),
+            e('td', null, String(count))
+          ]));
+      };
+
+      return e('div', { className: 'container' }, [
+        e('div', { className: 'card' }, [
+          e('h1', null, 'Rate Combination Finder'),
+          e('div', { className: 'subtitle' }, 'Static React app for GitHub Pages (no Babel).'),
+          e('form', { onSubmit }, [
+            e('div', { className: 'grid' }, [
+              e('div', null, [
+                e('label', null, 'Total Rate (sum target)'),
+                e('input', {
+                  type: 'number', step: '0.01', placeholder: 'e.g., 100.00',
+                  value: totalRate, onChange: (ev) => setTotalRate(ev.target.value)
+                })
+              ]),
+              e('div', null, [
+                e('label', null, 'Min Units'),
+                e('input', {
+                  type: 'number', min: '1', step: '1', placeholder: 'e.g., 3',
+                  value: minUnits, onChange: (ev) => setMinUnits(ev.target.value)
+                })
+              ])
+            ]),
+            e('div', { style: { marginTop: '1rem' } }, [
+              e('label', null, 'Rates (comma-separated)'),
+              e('textarea', {
+                placeholder: 'e.g., 10, 12.5, 20',
+                value: ratesInput, onChange: (ev) => setRatesInput(ev.target.value)
+              })
+            ]),
+            e('div', { className: 'row', style: { marginTop: '1rem' } }, [
+              e('button', { type: 'submit', className: 'btn' }, 'Find Best Combination')
+            ]),
+            e('div', { className: 'counters' }, [
+              e('span', { className: 'pill' }, ['Visitor Count (local): ', e('strong', null, String(visitorCount))]),
+              e('span', { className: 'pill' }, ['Click Count (local): ', e('strong', null, String(clickCount))])
+            ]),
+            error ? e('div', { className: 'error' }, error) : null,
+            result ? e('div', { className: 'result' }, [
+              result.rateCounts ? e(React.Fragment, null, [
+                e('div', { className: 'ok' }, 'Exact match found ✅'),
+                e('table', { className: 'table' }, [
+                  e('thead', null, e('tr', null, [ e('th', null, 'Rate'), e('th', null, 'Count') ])),
+                  e('tbody', null, renderTableRows())
+                ]),
+                e('div', { className: 'kpi' }, [
+                  e('div', { className: 'box' }, [ e('div', { className: 'label' }, 'Total Units'), e('div', { className: 'value' }, String(result.totalUnits)) ]),
+                  e('div', { className: 'box' }, [ e('div', { className: 'label' }, 'Total Rate'), e('div', { className: 'value' }, `₹ ${result.totalRate.toFixed(2)}`) ]),
+                  e('div', { className: 'box' }, [ e('div', { className: 'label' }, 'Input Target'), e('div', { className: 'value' }, `₹ ${Number(toFloat(totalRate)).toFixed(2)}`) ])
+                ])
+              ]) : e('div', { className: 'error' }, 'No exact combination found that meets the Min Units requirement.')
+            ]) : null
+          ])
+        ]),
+        e('footer', null, 'Static React app • No backend • Counters stored per browser via localStorage.')
+      ]);
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>
