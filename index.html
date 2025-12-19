@@ -17,11 +17,12 @@
     label{font-weight:600;display:block;margin-bottom:.35rem}
     input,textarea{width:100%;background:#0b1220;color:var(--text);border:1px solid #233043;border-radius:10px;padding:.75rem;outline:none;transition:180ms border-color ease}
     input:focus,textarea:focus{border-color:var(--accent)}
-    textarea{min-height:90px;resize:vertical}
+    textarea{min-height:110px;resize:vertical}
     .row{display:flex;gap:1rem}
     .row>*{flex:1}
     .btn{background:linear-gradient(90deg,#0ea5e9,#22d3ee);color:#05263d;font-weight:700;border:none;border-radius:12px;padding:.85rem 1.25rem;cursor:pointer}
-    .counters{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem;color:var(--muted)}
+    .btn.secondary{background:#0b1220;color:var(--text);border:1px solid #223047}
+    .counters{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;color:var(--muted)}
     .pill{background:#0b1220;border:1px solid #223047;border-radius:999px;padding:.4rem .8rem}
     .error{margin-top:1rem;color:var(--danger);font-weight:600}
     .result{margin-top:1.5rem;border-top:1px dashed #223047;padding-top:1rem}
@@ -44,57 +45,150 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 
   <script>
-    // Utilities
+    // ---------- Utilities ----------
+    const e = React.createElement;
     const toFloat = (s) => {
       const n = parseFloat(String(s).trim());
       return Number.isFinite(n) ? n : NaN;
     };
     const toCents = (v) => Math.round(v * 100);
+    const fromCents = (c) => c / 100;
+    const formatINR = (x) => `₹${Number(x).toFixed(2)}`;
 
-    // Logic ported from Python
-    function findBestCombinationJS(ratesFloat, totalRateFloat, minUnits) {
-      const cleanedRates = ratesFloat.filter(r => Number.isFinite(r) && r > 0);
+    function parseRates(text) {
+      return String(text)
+        .split(/[\n,;]+/)
+        .map(s => toFloat(s))
+        .filter(n => Number.isFinite(n) && n > 0);
+    }
+
+    // ---------- Finder (Exact first, else Closest-Below) ----------
+    function findBestCombinationJS(ratesFloat, totalRateFloat, minUnits, opts = {}) {
+      const cleanedRates = ratesFloat.filter((r) => Number.isFinite(r) && r > 0);
       if (cleanedRates.length === 0) return null;
+
       const rates = cleanedRates.map(toCents);
       const total = toCents(totalRateFloat);
-      const maxMultipliers = rates.map(rate => Math.floor(total / rate));
+
+      const direction = opts.direction || "either"; // "below" | "above" | "either"
+      const overshootPercent = Number.isFinite(opts.overshootPercent) ? Math.max(0, opts.overshootPercent) : 0.10;
+      const tieBreak = opts.tieBreak || "fewestUnits"; // "fewestUnits" | "lowestSum" | "none"
+
+      const upperLimit = direction === "below" ? total : Math.floor(total * (1 + overshootPercent));
+
+      const maxMultipliers = rates.map((rate) => Math.floor(upperLimit / rate));
       const n = rates.length;
       const counts = new Array(n).fill(0);
-      let found = null;
+
+      let exactCounts = null;
+      let bestDiff = Infinity;
+      let bestSum = null;
+      let bestCounts = null;
+      let bestUnits = 0;
+
+      const maxRemainingSumFrom = (i) => {
+        let m = 0;
+        for (let j = i + 1; j < n; j++) m += maxMultipliers[j] * rates[j];
+        return m;
+      };
+
+      function considerCandidate(sum, units) {
+        if (units < minUnits) return;
+        if (direction === "below" && sum > total) return;
+        if (direction === "above" && sum < total) return;
+
+        const diff = Math.abs(sum - total);
+        if (
+          diff < bestDiff ||
+          (diff === bestDiff && tieBreak === "fewestUnits" && units < bestUnits) ||
+          (diff === bestDiff && tieBreak === "lowestSum" && sum < bestSum)
+        ) {
+          bestDiff = diff;
+          bestSum = sum;
+          bestCounts = counts.slice();
+          bestUnits = units;
+        }
+      }
+
       function dfs(i, sum, units) {
-        if (found) return;
+        if (exactCounts) return;
+
         if (i === n) {
           if (sum === total && units >= minUnits) {
-            const combo = [];
-            for (let k = 0; k < n; k++) {
-              for (let c = 0; c < counts[k]; c++) combo.push(cleanedRates[k]);
-            }
-            found = combo;
+            exactCounts = counts.slice();
+            return;
           }
+          considerCandidate(sum, units);
           return;
         }
+
         const rate = rates[i];
         const maxC = Math.max(0, maxMultipliers[i]);
+
         for (let c = 1; c <= maxC; c++) {
           const newSum = sum + c * rate;
-          if (newSum > total) break;
+          if (newSum > upperLimit) break;
+
           counts[i] = c;
-          let maxRemaining = 0;
-          for (let j = i + 1; j < n; j++) maxRemaining += maxMultipliers[j] * rates[j];
-          if (newSum + maxRemaining < total) continue;
+
+          const maxRemaining = maxRemainingSumFrom(i);
+          if (newSum + maxRemaining < total && direction !== "below") {
+            considerCandidate(newSum, units + c);
+          }
+
           dfs(i + 1, newSum, units + c);
-          if (found) return;
+          if (exactCounts) return;
         }
+
         counts[i] = 0;
         dfs(i + 1, sum, units);
       }
+
       dfs(0, 0, 0);
-      return found;
+
+      const buildItems = (countsSnapshot) => {
+        const items = [];
+        const pairs = [];
+        for (let k = 0; k < n; k++) {
+          const c = countsSnapshot[k];
+          if (c > 0) {
+            pairs.push({ rate: cleanedRates[k], count: c });
+            for (let t = 0; t < c; t++) items.push(cleanedRates[k]);
+          }
+        }
+        return { items, pairs };
+      };
+
+      if (exactCounts) {
+        const { items, pairs } = buildItems(exactCounts);
+        return {
+          status: "exact",
+          total: fromCents(total),
+          items,
+          pairs,
+          counts: exactCounts,
+          units: items.length,
+          difference: 0,
+        };
+      }
+
+      if (bestCounts) {
+        const { items, pairs } = buildItems(bestCounts);
+        return {
+          status: direction === "below" ? "closest-below" : "closest",
+          total: fromCents(bestSum),
+          items,
+          pairs,
+          counts: bestCounts,
+          units: bestUnits,
+          difference: fromCents(Math.abs(bestSum - total)),
+        };
+      }
+
+      return null;
     }
 
-    // React without JSX
-    const e = React.createElement;
-
+    // ---------- React App (No JSX) ----------
     function App() {
       const [visitorCount, setVisitorCount] = React.useState(0);
       const [clickCount, setClickCount] = React.useState(0);
@@ -105,105 +199,172 @@
       const [error, setError] = React.useState("");
 
       React.useEffect(() => {
-        const prev = parseInt(localStorage.getItem("visitor_count") || "0", 10);
-        const next = prev + 1;
-        localStorage.setItem("visitor_count", String(next));
-        setVisitorCount(next);
-        const clicks = parseInt(localStorage.getItem("click_count") || "0", 10);
-        setClickCount(clicks);
+        try {
+          const v = parseInt(localStorage.getItem("rc_visits") || "0", 10) + 1;
+          localStorage.setItem("rc_visits", String(v));
+          setVisitorCount(v);
+        } catch (err) { /* ignore */ }
       }, []);
 
-      const onSubmit = (eEvt) => {
-        eEvt.preventDefault();
+      function handleCompute() {
         setError("");
         setResult(null);
-        const prevClicks = parseInt(localStorage.getItem("click_count") || "0", 10);
-        const nextClicks = prevClicks + 1;
-        localStorage.setItem("click_count", String(nextClicks));
-        setClickCount(nextClicks);
-        const total = toFloat(totalRate);
-        const minU = parseInt(minUnits, 10);
-        if (!Number.isFinite(total) || total <= 0) { setError("Please enter a valid positive Total Rate."); return; }
-        if (!Number.isFinite(minU) || minU < 1) { setError("Please enter a valid Min Units (≥ 1)."); return; }
-        const rates = ratesInput.split(",").map(s => toFloat(s)).filter(n => Number.isFinite(n) && n > 0);
-        if (rates.length === 0) { setError("Please provide at least one positive rate, comma-separated (e.g., 10, 12.5, 20)."); return; }
-        const best = findBestCombinationJS(rates, total, minU);
-        if (!best) { setResult({ rateCounts: null, totalUnits: 0, totalRate: 0 }); return; }
-        const map = new Map();
-        for (const r of best) { const key = r.toFixed(2); map.set(key, (map.get(key) || 0) + 1); }
-        const totalUnits = best.length;
-        const totalRateSum = best.reduce((acc, r) => acc + r, 0);
-        setResult({ rateCounts: map, totalUnits, totalRate: Number(totalRateSum.toFixed(2)) });
-      };
 
-      // Helpers to render rows
-      const renderTableRows = () => {
-        return Array.from(result.rateCounts.entries())
-          .sort((a,b) => parseFloat(a[0]) - parseFloat(b[0]))
-          .map(([rate,count]) => e('tr', { key: rate }, [
-            e('td', null, `₹ ${rate}`),
-            e('td', null, String(count))
-          ]));
-      };
+        const rates = parseRates(ratesInput);
+        const target = toFloat(totalRate);
+        const min = parseInt(minUnits, 10);
 
-      return e('div', { className: 'container' }, [
-        e('div', { className: 'card' }, [
-          e('h1', null, 'Rate Combination Finder'),
-          e('div', { className: 'subtitle' }, 'Static React app for GitHub Pages (no Babel).'),
-          e('form', { onSubmit }, [
-            e('div', { className: 'grid' }, [
-              e('div', null, [
-                e('label', null, 'Total Rate (sum target)'),
-                e('input', {
-                  type: 'number', step: '0.01', placeholder: 'e.g., 100.00',
-                  value: totalRate, onChange: (ev) => setTotalRate(ev.target.value)
-                })
+        if (!Number.isFinite(target) || target <= 0) {
+          setError("Please enter a valid target total (₹ > 0).");
+          return;
+        }
+        if (!Number.isFinite(min) || min < 1) {
+          setError("Minimum units must be an integer ≥ 1.");
+          return;
+        }
+        if (rates.length === 0) {
+          setError("Please provide at least one valid positive rate.");
+          return;
+        }
+
+        const res = findBestCombinationJS(rates, target, min, {
+          direction: "below",
+          tieBreak: "fewestUnits",
+        });
+
+        if (!res) {
+          setError("No feasible combination found (closest below) with the provided constraints.");
+          return;
+        }
+
+        setResult(res);
+        try {
+          const c = parseInt(localStorage.getItem("rc_clicks") || "0", 10) + 1;
+          localStorage.setItem("rc_clicks", String(c));
+          setClickCount(c);
+        } catch (err) { /* ignore */ }
+      }
+
+      function handleReset() {
+        setTotalRate("");
+        setMinUnits("1");
+        setRatesInput("");
+        setResult(null);
+        setError("");
+      }
+
+      const rates = parseRates(ratesInput);
+      const stats = rates.length
+        ? {
+            count: rates.length,
+            unique: new Set(rates.map(x => x.toFixed(2))).size,
+            min: Math.min(...rates),
+            max: Math.max(...rates),
+            avg: rates.reduce((a, b) => a + b, 0) / rates.length,
+          }
+        : null;
+
+      return e("div", { className: "container" },
+        e("div", { className: "card" }, [
+          e("h1", null, "Rate Combiner"),
+          e("div", { className: "subtitle" }, "Find an exact match if possible, otherwise pick the closest sum below the target."),
+
+          e("div", { className: "grid" }, [
+            e("div", null, [
+              e("label", null, "Rates (₹ — one per line or comma/semicolon separated)"),
+              e("textarea", {
+                value: ratesInput,
+                placeholder: "e.g.\n149\n199\n89.5\n60\n300\n120",
+                onChange: (ev) => setRatesInput(ev.target.value)
+              }),
+              e("div", { className: "counters" }, [
+                e("div", { className: "pill" }, `Valid rates: ${stats ? stats.count : 0}`),
+                e("div", { className: "pill" }, `Unique: ${stats ? stats.unique : 0}`),
+                stats ? e("div", { className: "pill" }, `Min: ${formatINR(stats.min)}`) : null,
+                stats ? e("div", { className: "pill" }, `Max: ${formatINR(stats.max)}`) : null,
+                stats ? e("div", { className: "pill" }, `Avg: ${formatINR(stats.avg)}`) : null,
               ]),
-              e('div', null, [
-                e('label', null, 'Min Units'),
-                e('input', {
-                  type: 'number', min: '1', step: '1', placeholder: 'e.g., 3',
-                  value: minUnits, onChange: (ev) => setMinUnits(ev.target.value)
-                })
-              ])
             ]),
-            e('div', { style: { marginTop: '1rem' } }, [
-              e('label', null, 'Rates (comma-separated)'),
-              e('textarea', {
-                placeholder: 'e.g., 10, 12.5, 20',
-                value: ratesInput, onChange: (ev) => setRatesInput(ev.target.value)
-              })
-            ]),
-            e('div', { className: 'row', style: { marginTop: '1rem' } }, [
-              e('button', { type: 'submit', className: 'btn' }, 'Find Best Combination')
-            ]),
-            e('div', { className: 'counters' }, [
-              e('span', { className: 'pill' }, ['Visitor Count (local): ', e('strong', null, String(visitorCount))]),
-              e('span', { className: 'pill' }, ['Click Count (local): ', e('strong', null, String(clickCount))])
-            ]),
-            error ? e('div', { className: 'error' }, error) : null,
-            result ? e('div', { className: 'result' }, [
-              result.rateCounts ? e(React.Fragment, null, [
-                e('div', { className: 'ok' }, 'Exact match found ✅'),
-                e('table', { className: 'table' }, [
-                  e('thead', null, e('tr', null, [ e('th', null, 'Rate'), e('th', null, 'Count') ])),
-                  e('tbody', null, renderTableRows())
+            e("div", null, [
+              e("div", { className: "row" }, [
+                e("div", null, [
+                  e("label", null, "Target Total (₹)"),
+                  e("input", {
+                    type: "number",
+                    step: "0.01",
+                    value: totalRate,
+                    placeholder: "e.g. 500",
+                    onChange: (ev) => setTotalRate(ev.target.value)
+                  }),
                 ]),
-                e('div', { className: 'kpi' }, [
-                  e('div', { className: 'box' }, [ e('div', { className: 'label' }, 'Total Units'), e('div', { className: 'value' }, String(result.totalUnits)) ]),
-                  e('div', { className: 'box' }, [ e('div', { className: 'label' }, 'Total Rate'), e('div', { className: 'value' }, `₹ ${result.totalRate.toFixed(2)}`) ]),
-                  e('div', { className: 'box' }, [ e('div', { className: 'label' }, 'Input Target'), e('div', { className: 'value' }, `₹ ${Number(toFloat(totalRate)).toFixed(2)}`) ])
-                ])
-              ]) : e('div', { className: 'error' }, 'No exact combination found that meets the Min Units requirement.')
-            ]) : null
-          ])
-        ]),
-        e('footer', null, 'Static React app • No backend • Counters stored per browser via localStorage.')
-      ]);
+                e("div", null, [
+                  e("label", null, "Minimum Units"),
+                  e("input", {
+                    type: "number",
+                    min: 1,
+                    value: minUnits,
+                    onChange: (ev) => setMinUnits(ev.target.value)
+                  }),
+                ]),
+              ]),
+              e("div", { className: "row", style: { marginTop: "0.75rem" } }, [
+                e("button", { className: "btn", onClick: handleCompute }, "Find Combination"),
+                e("button", { className: "btn secondary", onClick: handleReset }, "Reset"),
+              ]),
+              e("div", { className: "counters" }, [
+                e("div", { className: "pill" }, `Visits: ${visitorCount}`),
+                e("div", { className: "pill" }, `Runs: ${clickCount}`),
+              ]),
+            ]),
+          ]),
+
+          error ? e("div", { className: "error" }, error) : null,
+
+          result ? e("div", { className: "result" }, [
+            e("div", { className: "kpi" }, [
+              e("div", { className: "box" }, [
+                e("div", { className: "label" }, "Status"),
+                e("div", { className: "value" }, result.status === "exact" ? "Exact match" : "Closest below"),
+              ]),
+              e("div", { className: "box" }, [
+                e("div", { className: "label" }, "Total"),
+                e("div", { className: "value" }, formatINR(result.total)),
+              ]),
+              e("div", { className: "box" }, [
+                e("div", { className: "label" }, result.status === "exact" ? "Difference" : "Below target by"),
+                e("div", { className: "value" }, result.status === "exact" ? "₹0.00" : formatINR(result.difference)),
+              ]),
+            ]),
+
+            e("div", { style: { marginTop: ".75rem" } },
+              e("span", { className: "ok" }, `Units chosen: ${result.units}`)
+            ),
+
+            e("table", { className: "table" }, [
+              e("thead", null, e("tr", null, [
+                e("th", null, "Rate"),
+                e("th", null, "Count"),
+                e("th", null, "Subtotal"),
+              ])),
+              e("tbody", null,
+                result.pairs.map((p, idx) =>
+                  e("tr", { key: idx }, [
+                    e("td", null, formatINR(p.rate)),
+                    e("td", null, p.count),
+                    e("td", null, formatINR(p.rate * p.count)),
+                  ])
+                )
+              ),
+            ]),
+          ]) : null,
+
+          e("footer", null, "Tip: If no exact match is possible, the app selects the largest sum not exceeding your target.")
+        ])
+      );
     }
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(React.createElement(App));
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(e(App));
   </script>
 </body>
 </html>
